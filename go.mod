@@ -7,11 +7,14 @@ require (
 	github.com/Microsoft/hcsshim v0.13.0
 	github.com/bhendo/go-powershell v0.0.0-20190719160123-219e7fb4e41e
 	github.com/brianvoe/gofakeit/v7 v7.2.1
+	github.com/ccoveille/go-safecast v1.5.0
 	github.com/cenkalti/backoff/v5 v5.0.2
+	github.com/cloudnativelabs/kube-router/v2 v2.5.0
 	github.com/cnf/structhash v0.0.0-20201127153200-e1b16c1ebc08
 	github.com/containerd/containerd/v2 v2.1.3
 	github.com/containernetworking/cni v1.3.0
 	github.com/containernetworking/plugins v1.7.1
+	github.com/coreos/go-iptables v0.8.0
 	github.com/digitalocean/go-openvswitch v0.0.0-20241021184246-19e734367535
 	github.com/docker/docker v28.3.0+incompatible
 	github.com/emicklei/go-restful/v3 v3.12.2
@@ -163,6 +166,7 @@ require (
 	github.com/spf13/cobra v1.9.1 // indirect
 	github.com/spf13/viper v1.20.1 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect

@@ -1,8 +1,10 @@
 package speaker
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -109,4 +111,66 @@ func kubeOvnFamilyToAFI(ipFamily string) (bgpapi.Family_Afi, error) {
 	}
 
 	return family, nil
+}
+
+func stringToSlice(s, d string) []string {
+	ss := make([]string, 0)
+	if strings.Contains(s, d) {
+		ss = strings.Split(s, d)
+	} else {
+		ss = append(ss, s)
+	}
+	return ss
+}
+
+func stringSliceToIPNets(s []string) ([]net.IPNet, error) {
+	ipNets := make([]net.IPNet, 0)
+	for _, ipNetString := range s {
+		ip, ipNet, err := net.ParseCIDR(strings.TrimSpace(ipNetString))
+		if err != nil {
+			return nil, fmt.Errorf("could not parse \"%s\" as an CIDR", ipNetString)
+		}
+		if ip == nil {
+			return nil, fmt.Errorf("could not parse \"%s\" as an IP", ipNetString)
+		}
+		ipNets = append(ipNets, *ipNet)
+	}
+	return ipNets, nil
+}
+
+func stringSliceToIPs(s []string) ([]net.IP, error) {
+	ips := make([]net.IP, 0)
+	for _, ipString := range s {
+		ip := net.ParseIP(ipString)
+		if ip == nil {
+			return nil, fmt.Errorf("could not parse \"%s\" as an IP", ipString)
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+func stringSliceToUInt32(s []string) ([]uint32, error) {
+	ints := make([]uint32, 0)
+	for _, intString := range s {
+		newInt, err := strconv.ParseUint(intString, 0, 32)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse \"%s\" as an integer", intString)
+		}
+		ints = append(ints, uint32(newInt))
+	}
+	return ints, nil
+}
+
+func stringSliceB64Decode(s []string) ([]string, error) {
+	ss := make([]string, 0)
+	for _, b64String := range s {
+		decoded, err := base64.StdEncoding.DecodeString(b64String)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse \"%s\" as a base64 encoded string",
+				b64String)
+		}
+		ss = append(ss, string(decoded))
+	}
+	return ss, nil
 }
