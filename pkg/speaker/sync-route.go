@@ -179,10 +179,6 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 	var err error
 
 	klog.V(1).Info("Populating ipsets.")
-	err = nrc.syncNodeIPSets()
-	if err != nil {
-		klog.Errorf("Failed initial ipset setup: %s", err)
-	}
 
 	// In case of cluster provisioned on AWS disable source-destination check
 	// enable IP forwarding for the packets coming in/out from the pods
@@ -192,57 +188,8 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 	}
 
 	nrc.CNIFirewallSetup.Broadcast()
-
 	nrc.pbr = routes.NewPolicyBasedRules(nrc.krNode, nrc.podIPv4CIDRs, nrc.podIPv6CIDRs)
-
-	// Handle ipip tunnel overlay
-	if nrc.enableOverlays {
-		klog.V(1).Info("Tunnel Overlay enabled in configuration.")
-		klog.V(1).Info("Setting up overlay networking.")
-		err = nrc.pbr.Enable()
-		if err != nil {
-			klog.Errorf("Failed to enable required policy based routing: %s", err.Error())
-		}
-		if nrc.tunneler.EncapType() == tunnels.EncapTypeFOU {
-			// enable FoU module for the overlay tunnel
-			if _, err := exec.Command("modprobe", "fou").CombinedOutput(); err != nil {
-				klog.Errorf("Failed to enable FoU for tunnel overlay: %s", err.Error())
-			}
-			if _, err := exec.Command("modprobe", "fou6").CombinedOutput(); err != nil {
-				klog.Errorf("Failed to enable FoU6 for tunnel overlay: %s", err.Error())
-			}
-		}
-	} else {
-		klog.V(1).Info("Tunnel Overlay disabled in configuration.")
-		klog.V(1).Info("Cleaning up old overlay networking if needed.")
-		err = nrc.pbr.Disable()
-		if err != nil {
-			klog.Errorf("Failed to disable policy based routing: %s", err.Error())
-		}
-	}
-
 	klog.V(1).Info("Performing cleanup of depreciated rules/ipsets (if needed).")
-	// err = nrc.deleteBadPodEgressRules()
-	// if err != nil {
-	// 	klog.Errorf("Error cleaning up old/bad Pod egress rules: %s", err.Error())
-	// }
-
-	// // Handle Pod egress masquerading configuration
-	// if nrc.enablePodEgress {
-	// 	klog.V(1).Infoln("Enabling Pod egress.")
-
-	// 	err = nrc.createPodEgressRule()
-	// 	if err != nil {
-	// 		klog.Errorf("Error enabling Pod egress: %s", err.Error())
-	// 	}
-	// } else {
-	// 	klog.V(1).Infoln("Disabling Pod egress.")
-
-	// 	err = nrc.deletePodEgressRule()
-	// 	if err != nil {
-	// 		klog.Warningf("Error cleaning up Pod Egress related networking: %s", err)
-	// 	}
-	// }
 
 	// create 'kube-bridge' interface to which pods will be connected
 	kubeBridgeIf, err := netlink.LinkByName("kube-bridge")
