@@ -191,61 +191,6 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 	nrc.pbr = routes.NewPolicyBasedRules(nrc.krNode, nrc.podIPv4CIDRs, nrc.podIPv6CIDRs)
 	klog.V(1).Info("Performing cleanup of depreciated rules/ipsets (if needed).")
 
-	// create 'kube-bridge' interface to which pods will be connected
-	kubeBridgeIf, err := netlink.LinkByName("kube-bridge")
-	if err != nil && err.Error() == IfaceNotFound {
-		linkAttrs := netlink.NewLinkAttrs()
-		linkAttrs.Name = "kube-bridge"
-		bridge := &netlink.Bridge{LinkAttrs: linkAttrs}
-		if err = netlink.LinkAdd(bridge); err != nil {
-			klog.Errorf("Failed to create `kube-router` bridge due to %s. Will be created by CNI bridge "+
-				"plugin when pod is launched.", err.Error())
-		}
-		kubeBridgeIf, err = netlink.LinkByName("kube-bridge")
-		if err != nil {
-			klog.Errorf("Failed to find created `kube-router` bridge due to %s. Will be created by CNI "+
-				"bridge plugin when pod is launched.", err.Error())
-		}
-		err = netlink.LinkSetUp(kubeBridgeIf)
-		if err != nil {
-			klog.Errorf("Failed to bring `kube-router` bridge up due to %s. Will be created by CNI bridge "+
-				"plugin at later point when pod is launched.", err.Error())
-		}
-	}
-
-	if nrc.autoMTU {
-		mtu, err := nrc.krNode.GetNodeMTU()
-		if err != nil {
-			klog.Errorf("Failed to find MTU for node IP: %s for intelligently setting the kube-bridge MTU "+
-				"due to %s.", nrc.krNode.GetPrimaryNodeIP(), err.Error())
-		}
-		if mtu > 0 {
-			klog.Infof("Setting MTU of kube-bridge interface to: %d", mtu)
-			err = netlink.LinkSetMTU(kubeBridgeIf, mtu)
-			if err != nil {
-				klog.Errorf(
-					"Failed to set MTU for kube-bridge interface due to: %s (kubeBridgeIf: %#v, mtu: %v)",
-					err.Error(), kubeBridgeIf, mtu,
-				)
-				// need to correct kuberouter.conf because autoConfigureMTU() may have set an invalid value!
-				currentMTU := kubeBridgeIf.Attrs().MTU
-				if currentMTU > 0 && currentMTU != mtu {
-					klog.Warningf("Updating config file with current MTU for kube-bridge: %d", currentMTU)
-					cniNetConf, err := utils.NewCNINetworkConfig(nrc.cniConfFile)
-					if err == nil {
-						cniNetConf.SetMTU(currentMTU)
-						if err = cniNetConf.WriteCNIConfig(); err != nil {
-							klog.Errorf("Failed to update CNI config file due to: %v", err)
-						}
-					} else {
-						klog.Errorf("Failed to load CNI config file to reset MTU due to: %v", err)
-					}
-				}
-			}
-		} else {
-			klog.Infof("Not setting MTU of kube-bridge interface")
-		}
-	}
 	// enable netfilter for the bridge
 	if _, err := exec.Command("modprobe", "br_netfilter").CombinedOutput(); err != nil {
 		klog.Errorf("Failed to enable netfilter for bridge. Network policies and service proxy may "+
@@ -328,24 +273,11 @@ func (nrc *NetworkRoutingController) Run(healthChan chan<- *healthcheck.Controll
 
 		// advertise or withdraw IPs for the services to be reachable via host
 		// toAdvertise, toWithdraw, err := nrc.getVIPs()
-		// if err != nil {
-		// 	klog.Errorf("failed to get routes to advertise/withdraw %s", err)
-		// }
-
-		// klog.V(1).Infof("Performing periodic sync of service VIP routes")
-		// nrc.advertiseVIPs(toAdvertise)
-		// nrc.withdrawVIPs(toWithdraw)
-
 		klog.V(1).Info("Performing periodic sync of pod CIDR routes")
 		err = nrc.advertisePodRoute()
 		if err != nil {
 			klog.Errorf("Error advertising route: %s", err.Error())
 		}
-
-		// err = nrc.AddPolicies()
-		// if err != nil {
-		// 	klog.Errorf("Error adding BGP policies: %s", err.Error())
-		// }
 
 		if nrc.bgpEnableInternal {
 			nrc.syncInternalPeers()
@@ -507,7 +439,6 @@ func (nrc *NetworkRoutingController) injectRoute(path *gobgpapi.Path) error {
 		return err
 	}
 
-	// tunnelName := tunnels.GenerateTunnelName(nextHop.String())
 	checkNHSameSubnet := func(needle net.IP, haystack []net.IP) bool {
 		for _, nodeIP := range haystack {
 			nodeSubnet, _, err := utils.GetNodeSubnet(nodeIP, nil)
@@ -819,104 +750,6 @@ func (nrc *NetworkRoutingController) startBgpServer(grpcServer bool) error {
 		return errors.New("failed to get node object from api server: " + err.Error())
 	}
 
-	if nrc.bgpFullMeshMode {
-		nodeAsnNumber = nrc.defaultNodeAsnNumber
-	} else {
-		nodeasn, ok := node.Annotations[nodeASNAnnotation]
-		if !ok {
-			return errors.New("could not find ASN number for the node. " +
-				"Node needs to be annotated with ASN number details to start BGP server")
-		}
-		klog.Infof("Found ASN for the node to be %s from the node annotations", nodeasn)
-		asnNo, err := strconv.ParseUint(nodeasn, 0, asnMaxBitSize)
-		if err != nil {
-			return errors.New("failed to parse ASN number specified for the the node")
-		}
-		nodeAsnNumber = uint32(asnNo)
-		nrc.nodeAsnNumber = nodeAsnNumber
-	}
-
-	if clusterid, ok := node.Annotations[rrServerAnnotation]; ok {
-		klog.Infof("Found rr.server for the node to be %s from the node annotation", clusterid)
-		_, err := strconv.ParseUint(clusterid, 0, routeReflectorMaxID)
-		if err != nil {
-			if ip := net.ParseIP(clusterid); ip == nil {
-				return errors.New("failed to parse rr.server clusterId specified for the node")
-			}
-		}
-		nrc.bgpClusterID = clusterid
-		nrc.bgpRRServer = true
-	} else if clusterid, ok := node.Annotations[rrClientAnnotation]; ok {
-		klog.Infof("Found rr.client for the node to be %s from the node annotation", clusterid)
-		_, err := strconv.ParseUint(clusterid, 0, routeReflectorMaxID)
-		if err != nil {
-			if ip := net.ParseIP(clusterid); ip == nil {
-				return errors.New("failed to parse rr.client clusterId specified for the node")
-			}
-		}
-		nrc.bgpClusterID = clusterid
-		nrc.bgpRRClient = true
-	}
-
-	if prependASN, okASN := node.Annotations[pathPrependASNAnnotation]; okASN {
-		prependRepeatN, okRepeatN := node.Annotations[pathPrependRepeatNAnnotation]
-
-		if !okRepeatN {
-			return fmt.Errorf("both %s and %s must be set", pathPrependASNAnnotation, pathPrependRepeatNAnnotation)
-		}
-
-		_, err := strconv.ParseUint(prependASN, 0, asnMaxBitSize)
-		if err != nil {
-			return errors.New("failed to parse ASN number specified to prepend")
-		}
-
-		repeatN, err := strconv.ParseUint(prependRepeatN, 0, prependPathMaxBits)
-		if err != nil {
-			return errors.New("failed to parse number of times ASN should be repeated")
-		}
-
-		nrc.pathPrepend = true
-		nrc.pathPrependAS = prependASN
-		nrc.pathPrependCount = uint8(repeatN)
-	}
-
-	var nodeCommunities []string
-	nodeBGPCommunitiesAnnotation, ok := node.Annotations[nodeCommunitiesAnnotation]
-	if !ok {
-		klog.V(1).Info("Did not find any BGP communities on current node's annotations. " +
-			"Not exporting communities.")
-	} else {
-		nodeCommunities = stringToSlice(nodeBGPCommunitiesAnnotation, ",")
-		for _, nodeCommunity := range nodeCommunities {
-			if err = bgp.ValidateCommunity(nodeCommunity); err != nil {
-				klog.Warningf("cannot add BGP community '%s' from node annotation as it does not appear "+
-					"to be a valid community identifier", nodeCommunity)
-				continue
-			}
-			klog.V(1).Infof("Adding the node community found from node annotation: %s", nodeCommunity)
-			nrc.nodeCommunities = append(nrc.nodeCommunities, nodeCommunity)
-		}
-		if len(nrc.nodeCommunities) < 1 {
-			klog.Warningf("Found a community specified via annotation %s with value %s but none could be "+
-				"validated", nodeCommunitiesAnnotation, nodeBGPCommunitiesAnnotation)
-		}
-	}
-
-	// Get Custom Import Reject CIDRs from annotations
-	nodeBGPCustomImportRejectAnnotation, ok := node.Annotations[nodeCustomImportRejectAnnotation]
-	if !ok {
-		klog.V(1).Info("Did not find any node.bgp.customimportreject on current node's annotations. " +
-			"Skip configuring it.")
-	} else {
-		ipNetStrings := stringToSlice(nodeBGPCustomImportRejectAnnotation, ",")
-		ipNets, err := stringSliceToIPNets(ipNetStrings)
-		if err != nil {
-			klog.Warningf("Failed to parse node.bgp.customimportreject specified for the node, skip configuring it")
-		} else {
-			nrc.nodeCustomImportRejectIPNets = ipNets
-		}
-	}
-
 	if grpcServer && nrc.goBGPAdminPort != 0 {
 		nrc.bgpServer = gobgp.NewBgpServer(
 			gobgp.GrpcListenAddress(net.JoinHostPort(nrc.krNode.GetPrimaryNodeIP().String(),
@@ -1035,23 +868,6 @@ func (nrc *NetworkRoutingController) startBgpServer(grpcServer bool) error {
 					klog.Errorf("Failed to stop bgpServer: %s", err2)
 				}
 				return fmt.Errorf("failed to parse node's Peer Port Numbers Annotation: %s", err)
-			}
-		}
-
-		// Get Global Peer Router Password configs
-		var peerPasswords []string
-		nodeBGPPasswordsAnnotation, ok := node.Annotations[peerPasswordAnnotation]
-		if !ok {
-			klog.Infof("Could not find BGP peer password info in the node's annotations. Assuming no passwords.")
-		} else {
-			passStrings := stringToSlice(nodeBGPPasswordsAnnotation, ",")
-			peerPasswords, err = stringSliceB64Decode(passStrings)
-			if err != nil {
-				err2 := nrc.bgpServer.StopBgp(context.Background(), &gobgpapi.StopBgpRequest{})
-				if err2 != nil {
-					klog.Errorf("Failed to stop bgpServer: %s", err2)
-				}
-				return fmt.Errorf("failed to parse node's Peer Passwords Annotation")
 			}
 		}
 
